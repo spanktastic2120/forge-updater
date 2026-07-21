@@ -1,50 +1,70 @@
 #!/bin/bash
 
-# Set the local path where the file will be downloaded and extracted
-downloadPath="/tmp"
-extractPath="/path/to/forge-gui"
-baseUrl="https://downloads.cardforge.org/dailysnapshots/"
+# Set paths and desired branch
+downloadPath="" # temporary location to hold the downloaded files, ex: '/tmp/forge'
+extractPath="" # location of installed files, ex: '/home/[user]/.forge'
+updateBranch="" # choose either 'daily' or 'stable' branch to update to
+
+
+# Error if not configured
+if ! [[ -n "$downloadPath" && -n "$extractPath" && -n "$updateBranch" ]]; then
+    echo "Error: One or more of the variables are empty!"
+    exit 1
+fi
 
 # Get the current version number from the local file
 currentVersion=""
-if [ -f "$downloadPath/version.txt" ]; then
-    currentVersion=$(cat "$downloadPath/version.txt")
+if [ -f "$extractPath/version.txt" ]; then
+    currentVersion=$(cat "$extractPath/version.txt")
 fi
 
-# Function to extract file URL from website
-fileName=$(wget -qO- $baseUrl | grep -o '<a [^>]*href="[^"]*"' | sed -e 's/<a [^>]*href="//' -e 's/"//g' | grep '^forge-gui-desktop')
-webVersion="${fileName#forge-gui-desktop-}"  # Removing prefix "forge-gui-desktop-"
-webVersion="${webVersion%.tar.bz2}"             # Removing suffix ".tar.bz2"
+# Get the lastest snapshot and stable versions
+# Results saved as environment variables SNAPSHOT_VER and STABLE_VER
+eval "$(gh api repos/Card-Forge/forge/releases | tee >(grep -Po '"name":"forge-installer-\K[0-9.]+-SNAPSHOT-[0-9.]+(?=\.jar")' | head -n 1 | awk '{print "SNAPSHOT_VER=" $0}') >(grep -Po '"tag_name":"\Kforge-[0-9.]+' | head -n 1 | awk '{print "STABLE_VER=" $0}') > /dev/null)"
+
+# Check if wanted version is stable or snapshot and use corresponding web version
+if [[ "$updateBranch" == "daily" ]]; then
+    webVersion=$SNAPSHOT_VER
+else
+    webVersion=$STABLE_VER
+fi
+
 echo "web version: $webVersion"
 echo "local version: $currentVersion"
 
 # Compare versions
 if [ "$webVersion" \> "$currentVersion" ]; then
     
+    echo "New version available."
+    echo "Downloading..."
+
     # Download the new version
-    wget -O "$downloadPath/$fileName" "$baseUrl$fileName"
+    if [[ "$updateBranch" == "daily" ]]; then
+        gh release download daily-snapshots -R Card-Forge/forge --dir $downloadPath
+    else
+        gh release download $webVersion -R Card-Forge/forge --dir $downloadPath
+    fi
+
+    echo "Extracting..."
 
     # Extract the downloaded file
-    tar -xjf "$downloadPath/$fileName" -C "$extractPath" --overwrite
+    tar -xjf "$downloadPath/forge-installer-$webVersion.tar.bz2" -C "$extractPath" --overwrite
+    
+    # Copy the new version file
+    cp "$downloadPath/version.txt" "$extractPath/version.txt"
 
-    # Update the version file
-    echo "$webVersion" > "$downloadPath/version.txt"
+    echo "New version '$webVersion' installed."
+    
+    # Delete old files
+    find "$extractPath" -type f -name "forge-gui*.jar" ! -name "*${webVersion%%-*}*" -delete
 
-    echo "New version '$webVersion' downloaded and extracted."
+    # Delete temp dir
+    rm -r "$downloadPath"
+    
+    echo "Old and temporary files deleted."
+
 else
     echo "No new version available."
 fi
 
-echo "Cleaning old versions..."
-
-files_found=$(find "$extractPath" -type f -name "*.tar.bz2" ! -name "$fileName")
-
-# Check if files are found
-if [ -n "$files_found" ]; then
-    echo "$(find "$extractPath" -type f -name "*.tar.bz2" ! -name "$fileName")"
-    echo "Files found, deleting..."
-    echo "$files_found" | xargs rm
-    echo "done!"
-else
-    echo "No files found."
-fi
+exit 0
